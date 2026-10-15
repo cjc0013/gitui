@@ -29,6 +29,11 @@ enum SshCredentialSource<'a> {
 	PrivateKey(&'a Path),
 }
 
+fn existing_ssh_public_key(private_key: &Path) -> Option<PathBuf> {
+	let public_key = private_key.with_extension("pub");
+	public_key.is_file().then_some(public_key)
+}
+
 ///
 #[derive(Default, Clone)]
 pub struct CallbackStats {
@@ -259,7 +264,14 @@ impl Callbacks {
 						Cred::ssh_key_from_agent(username)
 					}
 					Some(SshCredentialSource::PrivateKey(path)) => {
-						Cred::ssh_key(username, None, path, None)
+						let public_key =
+							existing_ssh_public_key(path);
+						Cred::ssh_key(
+							username,
+							public_key.as_deref(),
+							path,
+							None,
+						)
 					}
 					None => Err(GitError::from_str(
 						"No SSH credentials left to try.",
@@ -313,10 +325,40 @@ impl Callbacks {
 
 #[cfg(test)]
 mod tests {
-	use super::{Callbacks, SshCredentialSource};
+	use super::{
+		existing_ssh_public_key, Callbacks, SshCredentialSource,
+	};
 	use crate::sync::cred::BasicAuthCredential;
 	use git2::CredentialType;
-	use std::path::PathBuf;
+	use std::{error::Error, fs, path::PathBuf};
+	use tempfile::tempdir;
+
+	#[test]
+	fn ssh_private_key_uses_matching_public_key_when_available(
+	) -> Result<(), Box<dyn Error>> {
+		let directory = tempdir()?;
+		let private_key = directory.path().join("id_ed25519");
+		let public_key = private_key.with_extension("pub");
+		fs::write(&private_key, b"private")?;
+		fs::write(&public_key, b"public")?;
+
+		assert_eq!(
+			existing_ssh_public_key(&private_key),
+			Some(public_key)
+		);
+		Ok(())
+	}
+
+	#[test]
+	fn ssh_private_key_allows_missing_public_key(
+	) -> Result<(), Box<dyn Error>> {
+		let directory = tempdir()?;
+		let private_key = directory.path().join("id_ed25519");
+		fs::write(&private_key, b"private")?;
+
+		assert_eq!(existing_ssh_public_key(&private_key), None);
+		Ok(())
+	}
 
 	#[test]
 	fn ssh_credentials_try_agent_then_each_private_key_once() {
